@@ -57,16 +57,35 @@ ryu-manager qos_controller.py
 ```
 
 ## 📊 Verification & Results
-To verify the QoS enforcement, run `iperf` tests from the Mininet CLI.
+To verify the QoS enforcement, run tests from the Mininet CLI demonstrating functional correctness, throughput, and latency.
 
-| Traffic Type | Protocol | Logic | Measured Bandwidth | Status |
+### 1. Throughput & Routing Behavior
+We assign heavy bulk data to the "Slow Lane" and priority to the "Fast Lane". The controller logs will demonstrate the match-action mapping applied dynamically based on protocol.
+
+| Traffic Type | Protocol | Routing Logic | Expected Bandwidth | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| **Standard** | TCP | Assigned to Queue 0 | **~1.2 Mbps** | Throttled |
-| **Priority** | UDP | Assigned to Queue 1 | **~9.0 Mbps** | Prioritized |
+| **Best Effort**| TCP | Assigned to Queue 0 | **~1.0 Mbps** | Throttled |
+| **Priority** | UDP | Assigned to Queue 1 | **~10.0 Mbps** | Prioritized |
+| **Control** | ICMP | Assigned to Queue 1 | **Low latency** | Prioritized |
 
-### Test Commands
 * **TCP Test:** `h1 iperf -c h2 -t 10`
 * **UDP Test:** `h1 iperf -u -c h2 -b 10M -t 10`
+
+### 2. Measuring Latency Impact
+We can observe how Best Effort TCP traffic congests Queue 0, while ICMP remains fast in Queue 1:
+
+1. **Start a continuous ping** (uses Queue 1):
+   ```bash
+   h1 ping h2
+   ```
+2. **Execute heavy TCP load** using `xterm h1 h2` or in background (uses Queue 0):
+   ```bash
+   h1 iperf -c h2 -t 30 &
+   ```
+3. **Observe Ping Results:** Because ICMP is mapped to the Fast Lane (Queue 1), the `ping` latency will stay relatively low and stable, almost entirely unaffected by the TCP congestion occurring simultaneously in Queue 0.
+
+### 3. Controller Observations
+Verify flow logic by checking the controller output in the terminal. As packets arrive, the controller handles `packet_in` events and dynamically installs OpenFlow rules with exact matches for Protocol/IP.
 
 ---
 
