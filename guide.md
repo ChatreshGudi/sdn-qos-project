@@ -1,89 +1,90 @@
-# SDN QoS Controller: Testing and Verification Guide
+# SDN QoS Controller: Complete Testing & Verification Guide
 
-This guide provides detailed steps on how to verify your SDN Quality of Service (QoS) controller using Mininet. It covers how to inspect the flow rules installed on your switches, how to scale to multi-switch topologies, and how to accurately test the latency and bandwidth to ensure your QoS priority queues are working correctly.
+This guide details exactly how to test and prove that your SDN Controller and Open vSwitch (OVS) hardware queues are actively analyzing traffic and enforcing Quality of Service (QoS).
 
 ---
 
-## 1. Inspecting Flow Tables
+## 1. Traffic Separation & Latency Testing
 
-To verify that your SDN controller is actually inserting the correct OpenFlow rules for QoS (such as directing traffic to specific queues), you need to dump the flow tables of your virtual switches.
+The ultimate test of QoS is demonstrating that low-priority "Best Effort" congestion cannot disrupt high-priority "Fast Lane" ping latency. 
 
-### Dumping Flows for a Specific Switch
-You can use the `ovs-ofctl` command. In the Mininet CLI, prepend `sh` to execute a shell command on the host.
+Based on your `qos_controller.py` logic:
+*   **TCP Traffic** = Assigned to Queue 0 (Slow Lane, 1 Mbps)
+*   **ICMP Traffic (Ping)** = Assigned to Queue 1 (Fast Lane, 10 Mbps)
+*   **UDP Traffic** = Assigned to Queue 1 (Fast Lane, 10 Mbps)
 
-1. **Start your Mininet topology** and controller.
-2. In the Mininet CLI, run:
-   ```bash
-   mininet> sh ovs-ofctl dump-flows s1
-   ```
-3. **What to look for:** Look at the output for rules containing your specific match criteria (e.g., `nw_src`, `nw_dst`, `tp_port`) and check the `actions` field. If QoS is applied correctly, you should see actions like `actions=set_queue:1,output:2` or `actions=enqueue:2:1` (which means output to port 2 via queue 1).
+### The Definitive Test (TCP vs. ICMP)
+We will swamp the "Slow Lane" with an enormous TCP data transfer and prove that ICMP pings in the "Fast Lane" bypass the traffic jam.
 
-### Dumping Flows for All Switches
-To quickly see the flows across all switches in the topology simultaneously:
+1.  **Start the TCP Server on h2:** Wait for incoming connections.
+    ```bash
+    mininet> h2 iperf -s &
+    ```
+2.  **Start the TCP Flood from h1:** Send an unlimited TCP data flood for 60 seconds.
+    ```bash
+    mininet> h1 iperf -c 10.0.0.2 -t 60 &
+    ```
+3.  **Run the Ping Test:** Ping while the TCP flood is ongoing.
+    ```bash
+    mininet> h1 ping -c 20 h2
+    ```
+
+**Interpreting the Results:**
+If QoS is working, the TCP data is forcefully trapped by the switch inside Queue 0. When your ICMP pings arrive, the controller recognizes them and puts them into the completely empty Queue 1. You should see an average Round Trip Time (RTT) of less than `1.0 ms` with `0% packet loss`. *This is the definitive proof of your QoS controller working.*
+
+---
+
+## 2. Bandwidth Shaping & Queue Limitations (UDP Test)
+
+What happens if you flood the "Fast Lane" itself? Because both UDP and ICMP share Queue 1, if you flood UDP, your pings will get stuck in queue buffers.
+
+1.  Start a UDP server:
+    ```bash
+    mininet> h2 iperf -u -s &
+    ```
+2.  Flood UDP traffic at 20 Mbps (which is higher than Queue 1's 10 Mbps limit):
+    ```bash
+    mininet> h1 iperf -u -c 10.0.0.2 -b 20M -t 60 &
+    ```
+3.  Run the Ping Test simultaneously:
+    ```bash
+    mininet> h1 ping -c 20 h2
+    ```
+
+**Interpreting the Results:**
+Queue 1 gets completely saturated by UDP. You will observe the average ping latency jump to `~150 ms`. Because the Queue 1 traffic limit was set to 10 Mbps in `setup_queues.sh`, the switch prevents the 20 Mbps flood from taking over, naturally shaping it down to ~7.5 - 10 Mbps. 
+
+---
+
+## 3. Inspecting Flow Tables
+
+To verify the OpenFlow rules your Ryu controller installs, use `ovs-ofctl` or `dpctl`.
+
 ```bash
 mininet> dpctl dump-flows
 ```
 
----
+### Why is my flow table empty? (The Timeout Feature)
+If you run `dpctl dump-flows` after your test finishes and you only see `priority=0 actions=CONTROLLER:65535`, you might think the controller failed. **This is normal and intended!**
 
-## 2. Testing with Multi-Switch Topologies
+In your `qos_controller.py`, the flow rules are explicitly installed with:
+`idle_timeout=20, hard_timeout=60`
 
-Your SDN controller handles multi-switch setups by viewing the entire network centrally. The key difference in testing multi-switch networks is that QoS queues and routing rules must be installed on **every** switch along the data path.
-
-### Starting Multi-Switch Topologies in Mininet
-Start Mininet with a custom topology to test multi-hop QoS routing:
-
-- **Linear Topology (e.g., 4 switches connected in a line):**
-  ```bash
-  sudo mn --controller=remote --topo=linear,4 --mac --switch=ovsk
-  ```
-
-- **Tree Topology (e.g., depth 2, fanout 2):**
-  ```bash
-  sudo mn --controller=remote --topo=tree,depth=2,fanout=2 --mac --switch=ovsk
-  ```
-
-*Note: You must ensure that your external script initializing the `ovs-vsctl` queues targets the physical interfaces on all switches in the path, not just `s1`.*
+This means Open vSwitch automatically deletes the flow rules if no packets match them for 20 seconds. This prevents the switch memory from filling up over time. 
+*To see the actual `set_queue` actions, you MUST run `dpctl dump-flows` in the middle of an active ping or iperf test before the timeout expires!*
 
 ---
 
-## 3. Verifying QoS: Latency and Bandwidth Testing
+## 4. Multi-Switch Topologies
 
-To prove that your QoS controller works, you need to create network congestion. QoS only takes effect when a link's bandwidth is maxed out. We will use `iperf` to flood the network with low-priority traffic, and then use `ping` to measure the latency of high-priority traffic.
+When moving beyond a single switch, QoS queues must be applied to all forwarding egress interfaces in the topology path. 
 
-### Step 3.1: Establish a Baseline (No Congestion)
-First, verify normal latency when the network is empty.
+Use the provided `setup_queues.sh` script to automate this. 
+Simply edit the script before running it:
+
 ```bash
-mininet> h1 ping -c 5 h2
-```
-*Observe the `time=X.XX ms`. This should be extremely low (usually <1ms).*
-
-### Step 3.2: Create Background Congestion (Low Priority)
-Assume `h1` sending to `h2` is considered **Low Priority** traffic by your controller. We will flood the network using UDP.
-
-1. Open separate terminal windows for the hosts:
-   ```bash
-   mininet> xterm h1 h2
-   ```
-2. In the **h2 terminal** (Receiver), start the iperf server:
-   ```bash
-   iperf -s -u -i 1
-   ```
-3. In the **h1 terminal** (Sender), start flooding the link. *(Adjust `-b 10M` to a value higher than your configured link bottleneck/queue limit to ensure congestion).*
-   ```bash
-   iperf -c 10.0.0.2 -u -b 10M -t 60 -i 1
-   ```
-
-### Step 3.3: Measure Premium Traffic Latency (High Priority)
-Assume `h3` sending to `h4` is configured by your controller as **High Priority** traffic (e.g., assigned to a premium queue).
-
-While the `iperf` flood is actively running in the background, send ping packets from `h3` to `h4`:
-```bash
-mininet> h3 ping h4
+# Edit setup_queues.sh and update this array
+INTERFACES=("s1-eth2" "s2-eth2" "s3-eth2")
 ```
 
-### 4. Interpreting the Results
-
-*   **If QoS is WORKING:** The ping times between `h3` and `h4` should remain low and stable, very close to the baseline measured in Step 3.1, with 0% packet loss. This signifies that your switch is prioritizing the ICMP packets over the flooded UDP packets.
-*   **If QoS is NOT WORKING:** The ping times between `h3` and `h4` will spike significantly (hundreds of milliseconds) or packets will be dropped entirely. This occurs because the switch processes all packets equally, and the link is overwhelmed by the `h1` to `h2` traffic.
-*   **Bandwidth Verification:** If you look at the `iperf` server output on `h2`, you will see packet loss and a drop in received bandwidth, which confirms the switch is intentionally dropping the low-priority traffic to make room for your high-priority pings.
+When you start your custom linear or tree topology, running `./setup_queues.sh` will ensure the hardware queues are applied everywhere, allowing end-to-end QoS.

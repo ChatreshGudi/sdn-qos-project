@@ -74,20 +74,31 @@ We assign heavy bulk data to the "Slow Lane" and priority to the "Fast Lane". Th
 * **UDP Test:** `h1 iperf -u -c h2 -b 10M -t 10`
 
 ### 2. Measuring Latency Impact
-We can observe how Best Effort TCP traffic congests Queue 0, while ICMP remains fast in Queue 1:
+To prove that our controller successfully separates and prioritizes traffic, we will intentionally flood the Slow Lane (Queue 0) with a heavy TCP flow, and then measure the latency of our Fast Lane (Queue 1) using ICMP pings.
 
-1. **Start a continuous ping** (uses Queue 1):
+**Complete Test Sequence:**
+1. **Start the TCP Server in the background:** (Prepare the receiver)
    ```bash
-   h1 ping h2
+   mininet> h2 iperf -s &
    ```
-2. **Execute heavy TCP load** using `xterm h1 h2` or in background (uses Queue 0):
+2. **Start the TCP Flood in the background:** (Congest the Slow Lane from h1 to h2)
    ```bash
-   h1 iperf -c h2 -t 30 &
+   mininet> h1 iperf -c 10.0.0.2 -t 60 &
    ```
-3. **Observe Ping Results:** Because ICMP is mapped to the Fast Lane (Queue 1), the `ping` latency will stay relatively low and stable, almost entirely unaffected by the TCP congestion occurring simultaneously in Queue 0.
+3. **Run your Ping Test:** (Measure Fast Lane latency)
+   ```bash
+   mininet> h1 ping -c 20 h2
+   ```
 
-### 3. Controller Observations
-Verify flow logic by checking the controller output in the terminal. As packets arrive, the controller handles `packet_in` events and dynamically installs OpenFlow rules with exact matches for Protocol/IP.
+**Expected Results:** 
+Because the TCP flood is restricted to the 1 Mbps Queue 0, the ICMP ping (which is routed by the controller to Queue 1) will bypass the congestion entirely. You should observe average ping latencies (RTT) of around `~0.4 ms` with 0% packet loss, completely unaffected by the massive TCP data transfer occurring on the exact same physical link!
+
+### 3. Controller & Flow Observations
+Verify flow logic by checking the controller output in the terminal or inspecting the switches:
+```bash
+mininet> dpctl dump-flows
+```
+*Note: Due to the `idle_timeout=20` and `hard_timeout=60` programmed into `qos_controller.py`, the flow rules will automatically delete themselves from the switch if no traffic is seen for 20 seconds. You must run `dpctl dump-flows` **while** the traffic is actively running to see the `set_queue` actions applied!*
 
 ---
 

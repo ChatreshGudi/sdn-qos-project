@@ -54,30 +54,47 @@ class SimpleQoS(app_manager.RyuApp):
 
         actions = [parser.OFPActionOutput(out_port)]
 
-        # If we know the destination, install a flow with QoS logic
+        # If the destination MAC is known, we can install a specific flow rule rather than just forwarding.
         if out_port != ofproto.OFPP_FLOOD:
             ip_pkt = pkt.get_protocol(ipv4.ipv4)
+            
+            # QoS Classification Logic
+            # We classify packets based on their IPv4 protocol number and assign them to hardware queues.
             if ip_pkt:
-                # Explicit protocol handling based on requirements
-                if ip_pkt.proto == 6:  # TCP
+                # Explicit protocol handling based on project requirements:
+                if ip_pkt.proto == 6:  # TCP Traffic
+                    # TCP is assigned to Queue 0 (Best Effort / Slow Lane - e.g. 1 Mbps)
+                    # This prevents bulk data transfers from consuming all bandwidth.
                     q_id = 0
                     proto_name = "TCP"
-                elif ip_pkt.proto == 17:  # UDP
+                    
+                elif ip_pkt.proto == 17:  # UDP Traffic
+                    # UDP is assigned to Queue 1 (Priority / Fast Lane - e.g. 10 Mbps)
+                    # Used for time-sensitive or streaming data.
                     q_id = 1
                     proto_name = "UDP"
-                elif ip_pkt.proto == 1:  # ICMP
+                    
+                elif ip_pkt.proto == 1:  # ICMP Traffic (Ping)
+                    # ICMP is assigned to Queue 1 (Priority / Fast Lane)
+                    # This guarantees low-latency pings even when Queue 0 is completely congested.
                     q_id = 1
                     proto_name = "ICMP"
+                    
                 else:
+                    # All other IPv4 traffic defaults to Best Effort (Queue 0)
                     q_id = 0
                     proto_name = "OTHER IPv4"
 
                 self.logger.info("Packet_In: %s received, src=%s, dst=%s, mapping to Queue %d", proto_name, ip_pkt.src, ip_pkt.dst, q_id)
 
+                # Set the action to push the packet into the assigned queue before outputting it.
                 actions = [parser.OFPActionSetQueue(queue_id=q_id), parser.OFPActionOutput(out_port)]
                 match = parser.OFPMatch(in_port=in_port, eth_type=0x0800, ip_proto=ip_pkt.proto, ipv4_dst=ip_pkt.dst, ipv4_src=ip_pkt.src)
                 
-                # Add flow with timeout to prevent stale rules (20s idle / 60s hard timeout)
+                # Add flow to the switch's flow table.
+                # idle_timeout=20: The rule deletes itself if no packets match it for 20 seconds.
+                # hard_timeout=60: The rule deletes itself absolutely after 60 seconds regardless of traffic.
+                # This prevents the switch memory from filling up with old rules (which is why dump-flows may appear empty after testing).
                 self.add_flow(datapath, 10, match, actions, idle_timeout=20, hard_timeout=60)
 
         # Send packet out
