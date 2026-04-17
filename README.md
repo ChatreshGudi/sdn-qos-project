@@ -42,13 +42,15 @@ sudo mn --custom topology.py --topo qostopo --controller remote --switch ovs,pro
 ```
 
 ### 2. Configure Hardware Queues
-In a second terminal, define the "Slow Lane" (1 Mbps) and "Fast Lane" (10 Mbps):
+In a second terminal, define the "Slow Lane" (1 Mbps) and "Fast Lane" (10 Mbps).
+We use the provided `setup_queues.sh` script to cleanly apply these rules (this script clears old queues and can be easily modified for multi-switch topologies):
+
+Make the script executable (only needed once) and run it:
 ```bash
-sudo ovs-vsctl set Port s1-eth2 qos=@newqos -- \
---id=@newqos create QoS type=linux-htb other-config:max-rate=10000000 queues=0=@q0,1=@q1 -- \
---id=@q0 create Queue other-config:max-rate=1000000 -- \
---id=@q1 create Queue other-config:max-rate=10000000
+chmod +x setup_queues.sh
+./setup_queues.sh
 ```
+*(Note: To test across multi-switch topologies, edit `setup_queues.sh` and add to the `INTERFACES` array, e.g., `"s1-eth2" "s2-eth2" "s3-eth2"`).*
 
 ### 3. Start the Ryu Controller
 In a third terminal, start the prioritization logic:
